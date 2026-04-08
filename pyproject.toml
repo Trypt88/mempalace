@@ -1,6 +1,6 @@
 [project]
 name = "mempalace"
-version = "3.0.15"
+version = "3.0.11"
 description = "Give your AI a memory — mine projects and conversations into a searchable palace. No API key required."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -69,7 +69,7 @@ testpaths = ["tests"]
 source = ["mempalace"]
 
 [tool.coverage.report]
-fail_under = 60
+fail_under = 85
 show_missing = true
 exclude_lines = [
     "if __name__",

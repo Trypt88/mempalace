@@ -1,12 +1,23 @@
 """Tests for mempalace.onboarding."""
 
 import os
+from unittest.mock import patch
 
 from mempalace.onboarding import (
     DEFAULT_WINGS,
+    _ask,
+    _ask_mode,
+    _ask_people,
+    _ask_projects,
+    _ask_wings,
+    _auto_detect,
     _generate_aaak_bootstrap,
+    _header,
+    _hr,
     _warn_ambiguous,
+    _yn,
     quick_setup,
+    run_onboarding,
 )
 
 # Force UTF-8 for Windows (source file contains Unicode symbols like hearts/stars)
@@ -170,3 +181,272 @@ def test_generate_aaak_bootstrap_empty_people(tmp_path):
     _generate_aaak_bootstrap([], [], ["general"], "personal", config_dir=tmp_path)
     assert (tmp_path / "aaak_entities.md").exists()
     assert (tmp_path / "critical_facts.md").exists()
+
+
+def test_generate_aaak_bootstrap_collision(tmp_path):
+    """Two people with same 3-letter code get different codes."""
+    people = [
+        {"name": "Alice", "relationship": "friend", "context": "work"},
+        {"name": "Alison", "relationship": "coworker", "context": "work"},
+    ]
+    _generate_aaak_bootstrap(people, [], ["work"], "work", config_dir=tmp_path)
+    content = (tmp_path / "aaak_entities.md").read_text()
+    assert "ALI" in content
+    assert "ALIS" in content
+
+
+def test_generate_aaak_bootstrap_no_relationship(tmp_path):
+    """Person without relationship string still generates entry."""
+    people = [{"name": "Bob", "context": "work"}]
+    _generate_aaak_bootstrap(people, [], ["work"], "work", config_dir=tmp_path)
+    content = (tmp_path / "aaak_entities.md").read_text()
+    assert "BOB=Bob" in content
+
+
+# ── _hr, _header ──────────────────────────────────────────────────────
+
+
+def test_hr_prints_line(capsys):
+    _hr()
+    out = capsys.readouterr().out
+    assert "─" in out
+
+
+def test_header_prints_banner(capsys):
+    _header("Test Title")
+    out = capsys.readouterr().out
+    assert "Test Title" in out
+    assert "=" in out
+
+
+# ── _ask ──────────────────────────────────────────────────────────────
+
+
+def test_ask_with_default_uses_default():
+    with patch("builtins.input", return_value=""):
+        result = _ask("prompt", default="fallback")
+    assert result == "fallback"
+
+
+def test_ask_with_default_uses_input():
+    with patch("builtins.input", return_value="custom"):
+        result = _ask("prompt", default="fallback")
+    assert result == "custom"
+
+
+def test_ask_no_default():
+    with patch("builtins.input", return_value="answer"):
+        result = _ask("prompt")
+    assert result == "answer"
+
+
+# ── _yn ───────────────────────────────────────────────────────────────
+
+
+def test_yn_default_yes_empty_input():
+    with patch("builtins.input", return_value=""):
+        assert _yn("continue?") is True
+
+
+def test_yn_default_no_empty_input():
+    with patch("builtins.input", return_value=""):
+        assert _yn("continue?", default="n") is False
+
+
+def test_yn_explicit_yes():
+    with patch("builtins.input", return_value="yes"):
+        assert _yn("continue?", default="n") is True
+
+
+def test_yn_explicit_no():
+    with patch("builtins.input", return_value="no"):
+        assert _yn("continue?") is False
+
+
+# ── _ask_mode ─────────────────────────────────────────────────────────
+
+
+def test_ask_mode_work():
+    with patch("builtins.input", return_value="1"):
+        assert _ask_mode() == "work"
+
+
+def test_ask_mode_personal():
+    with patch("builtins.input", return_value="2"):
+        assert _ask_mode() == "personal"
+
+
+def test_ask_mode_combo():
+    with patch("builtins.input", return_value="3"):
+        assert _ask_mode() == "combo"
+
+
+def test_ask_mode_retries_on_bad_input():
+    with patch("builtins.input", side_effect=["x", "bad", "1"]):
+        assert _ask_mode() == "work"
+
+
+# ── _ask_people ───────────────────────────────────────────────────────
+
+
+def test_ask_people_personal_mode():
+    with patch("builtins.input", side_effect=["Alice, daughter", "", "done"]):
+        people, aliases = _ask_people("personal")
+    assert len(people) == 1
+    assert people[0]["name"] == "Alice"
+    assert people[0]["relationship"] == "daughter"
+
+
+def test_ask_people_work_mode():
+    with patch("builtins.input", side_effect=["Bob, manager", "", "done"]):
+        people, aliases = _ask_people("work")
+    assert len(people) == 1
+    assert people[0]["name"] == "Bob"
+    assert people[0]["context"] == "work"
+
+
+def test_ask_people_combo_mode():
+    with patch(
+        "builtins.input",
+        side_effect=[
+            "Alice, daughter",
+            "",
+            "done",  # personal
+            "Bob, boss",
+            "done",  # work
+        ],
+    ):
+        people, aliases = _ask_people("combo")
+    assert len(people) == 2
+
+
+def test_ask_people_with_nickname():
+    with patch("builtins.input", side_effect=["Alice, daughter", "Ali", "done"]):
+        people, aliases = _ask_people("personal")
+    assert aliases == {"Ali": "Alice"}
+
+
+def test_ask_people_empty_name_skipped():
+    with patch("builtins.input", side_effect=["", "done"]):
+        people, aliases = _ask_people("personal")
+    assert len(people) == 0
+
+
+# ── _ask_projects ─────────────────────────────────────────────────────
+
+
+def test_ask_projects_personal_returns_empty():
+    result = _ask_projects("personal")
+    assert result == []
+
+
+def test_ask_projects_work_mode():
+    with patch("builtins.input", side_effect=["Acme", "BigCo", "done"]):
+        result = _ask_projects("work")
+    assert result == ["Acme", "BigCo"]
+
+
+def test_ask_projects_empty_entry_stops():
+    with patch("builtins.input", side_effect=["Acme", ""]):
+        result = _ask_projects("work")
+    assert result == ["Acme"]
+
+
+# ── _ask_wings ────────────────────────────────────────────────────────
+
+
+def test_ask_wings_accept_defaults():
+    with patch("builtins.input", return_value=""):
+        result = _ask_wings("work")
+    assert result == DEFAULT_WINGS["work"]
+
+
+def test_ask_wings_custom():
+    with patch("builtins.input", return_value="alpha, beta, gamma"):
+        result = _ask_wings("personal")
+    assert result == ["alpha", "beta", "gamma"]
+
+
+# ── _auto_detect ──────────────────────────────────────────────────────
+
+
+def test_auto_detect_no_files(tmp_path):
+    result = _auto_detect(str(tmp_path), [])
+    assert result == []
+
+
+def test_auto_detect_filters_known(tmp_path):
+    known = [{"name": "Alice"}]
+    fake_detected = {
+        "people": [
+            {"name": "Alice", "confidence": 0.9, "signals": ["test"]},
+            {"name": "Bob", "confidence": 0.8, "signals": ["test"]},
+        ],
+        "projects": [],
+        "uncertain": [],
+    }
+    with (
+        patch("mempalace.onboarding.scan_for_detection", return_value=["file.txt"]),
+        patch("mempalace.onboarding.detect_entities", return_value=fake_detected),
+    ):
+        result = _auto_detect(str(tmp_path), known)
+    names = [p["name"] for p in result]
+    assert "Alice" not in names
+    assert "Bob" in names
+
+
+def test_auto_detect_filters_low_confidence(tmp_path):
+    fake_detected = {
+        "people": [{"name": "Bob", "confidence": 0.5, "signals": ["test"]}],
+        "projects": [],
+        "uncertain": [],
+    }
+    with (
+        patch("mempalace.onboarding.scan_for_detection", return_value=["file.txt"]),
+        patch("mempalace.onboarding.detect_entities", return_value=fake_detected),
+    ):
+        result = _auto_detect(str(tmp_path), [])
+    assert len(result) == 0
+
+
+def test_auto_detect_handles_exception(tmp_path):
+    with patch("mempalace.onboarding.scan_for_detection", side_effect=Exception("boom")):
+        result = _auto_detect(str(tmp_path), [])
+    assert result == []
+
+
+# ── run_onboarding ────────────────────────────────────────────────────
+
+
+def test_run_onboarding_basic_flow(tmp_path):
+    """Test the full onboarding flow with minimal mocking."""
+    with (
+        patch("mempalace.onboarding._ask_mode", return_value="work"),
+        patch(
+            "mempalace.onboarding._ask_people",
+            return_value=([{"name": "Bob", "relationship": "boss", "context": "work"}], {}),
+        ),
+        patch("mempalace.onboarding._ask_projects", return_value=["Acme"]),
+        patch("mempalace.onboarding._ask_wings", return_value=["projects", "team"]),
+        patch("mempalace.onboarding._yn", return_value=False),
+        patch("mempalace.onboarding._warn_ambiguous", return_value=[]),
+    ):
+        registry = run_onboarding(directory=".", config_dir=tmp_path, auto_detect=False)
+    assert "Bob" in registry.people
+    assert "Acme" in registry.projects
+
+
+def test_run_onboarding_with_ambiguous_names(tmp_path):
+    """Onboarding prints a warning for ambiguous names."""
+    with (
+        patch("mempalace.onboarding._ask_mode", return_value="personal"),
+        patch(
+            "mempalace.onboarding._ask_people",
+            return_value=([{"name": "Grace", "relationship": "friend", "context": "personal"}], {}),
+        ),
+        patch("mempalace.onboarding._ask_projects", return_value=[]),
+        patch("mempalace.onboarding._ask_wings", return_value=["family"]),
+        patch("mempalace.onboarding._yn", return_value=False),
+    ):
+        registry = run_onboarding(directory=".", config_dir=tmp_path, auto_detect=False)
+    assert "Grace" in registry.people

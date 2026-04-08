@@ -1,9 +1,14 @@
 """Tests for mempalace.room_detector_local."""
 
+from unittest.mock import MagicMock, patch
+
 from mempalace.room_detector_local import (
     FOLDER_ROOM_MAP,
     detect_rooms_from_files,
     detect_rooms_from_folders,
+    detect_rooms_local,
+    get_user_approval,
+    print_proposed_structure,
     save_config,
 )
 
@@ -155,3 +160,105 @@ def test_save_config_valid_yaml(tmp_path):
     assert data["wing"] == "test_proj"
     assert len(data["rooms"]) == 1
     assert data["rooms"][0]["name"] == "general"
+
+
+# ── print_proposed_structure ──────────────────────────────────────────
+
+
+def test_print_proposed_structure(capsys):
+    rooms = [
+        {"name": "frontend", "description": "UI files"},
+        {"name": "general", "description": "Everything else"},
+    ]
+    print_proposed_structure("myapp", rooms, 42, "folder structure")
+    out = capsys.readouterr().out
+    assert "myapp" in out
+    assert "frontend" in out
+    assert "42 files" in out
+    assert "folder structure" in out
+
+
+# ── get_user_approval ─────────────────────────────────────────────────
+
+
+def test_get_user_approval_accept_all():
+    rooms = [{"name": "frontend", "description": "UI"}]
+    with patch("builtins.input", return_value=""):
+        result = get_user_approval(rooms)
+    assert result == rooms
+
+
+def test_get_user_approval_edit_remove():
+    rooms = [
+        {"name": "frontend", "description": "UI"},
+        {"name": "backend", "description": "Server"},
+    ]
+    with patch("builtins.input", side_effect=["edit", "1", "n"]):
+        result = get_user_approval(rooms)
+    # Room 1 (frontend) removed
+    assert len(result) == 1
+    assert result[0]["name"] == "backend"
+
+
+def test_get_user_approval_add_room():
+    rooms = [{"name": "general", "description": "All files"}]
+    with patch(
+        "builtins.input",
+        side_effect=[
+            "add",
+            "custom_room",
+            "My custom room",
+            "",
+        ],
+    ):
+        result = get_user_approval(rooms)
+    names = [r["name"] for r in result]
+    assert "custom_room" in names
+
+
+# ── detect_rooms_local ────────────────────────────────────────────────
+
+
+def test_detect_rooms_local_yes_mode(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "readme.md").write_text("hello")
+    mock_miner = MagicMock()
+    mock_miner.scan_project.return_value = ["file1.py"]
+    with patch.dict("sys.modules", {"mempalace.miner": mock_miner}):
+        detect_rooms_local(str(tmp_path), yes=True)
+    assert (tmp_path / "mempalace.yaml").exists()
+
+
+def test_detect_rooms_local_fallback_to_files(tmp_path):
+    """When folder detection gives only 'general', falls back to file patterns."""
+    for i in range(3):
+        (tmp_path / f"test_file_{i}.py").write_text("content")
+    mock_miner = MagicMock()
+    mock_miner.scan_project.return_value = ["f1", "f2"]
+    with patch.dict("sys.modules", {"mempalace.miner": mock_miner}):
+        detect_rooms_local(str(tmp_path), yes=True)
+    assert (tmp_path / "mempalace.yaml").exists()
+
+
+def test_detect_rooms_local_missing_dir():
+    """Non-existent directory causes sys.exit."""
+    import pytest
+
+    with pytest.raises(SystemExit):
+        detect_rooms_local("/nonexistent/path/that/does/not/exist", yes=True)
+
+
+def test_detect_rooms_local_interactive(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("code")
+    mock_miner = MagicMock()
+    mock_miner.scan_project.return_value = ["f1"]
+    with (
+        patch.dict("sys.modules", {"mempalace.miner": mock_miner}),
+        patch(
+            "mempalace.room_detector_local.get_user_approval",
+            return_value=[{"name": "general", "description": "All files", "keywords": []}],
+        ),
+    ):
+        detect_rooms_local(str(tmp_path), yes=False)
+    assert (tmp_path / "mempalace.yaml").exists()

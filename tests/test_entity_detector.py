@@ -1,11 +1,14 @@
 """Tests for mempalace.entity_detector."""
 
 import os
+from unittest.mock import patch
 
 from mempalace.entity_detector import (
     PROSE_EXTENSIONS,
     STOPWORDS,
+    _print_entity_list,
     classify_entity,
+    confirm_entities,
     detect_entities,
     extract_candidates,
     scan_for_detection,
@@ -258,3 +261,120 @@ def test_stopwords_contains_common_words():
 def test_prose_extensions():
     assert ".txt" in PROSE_EXTENSIONS
     assert ".md" in PROSE_EXTENSIONS
+
+
+# ── _print_entity_list ─────────────────────────────────────────────────
+
+
+def test_print_entity_list_with_entities(capsys):
+    entities = [
+        {"name": "Alice", "confidence": 0.9, "signals": ["dialogue marker (3x)"]},
+        {"name": "Bob", "confidence": 0.5, "signals": []},
+    ]
+    _print_entity_list(entities, "PEOPLE")
+    out = capsys.readouterr().out
+    assert "PEOPLE" in out
+    assert "Alice" in out
+    assert "Bob" in out
+
+
+def test_print_entity_list_empty(capsys):
+    _print_entity_list([], "PEOPLE")
+    out = capsys.readouterr().out
+    assert "none detected" in out
+
+
+# ── confirm_entities ───────────────────────────────────────────────────
+
+
+def test_confirm_entities_yes_mode():
+    detected = {
+        "people": [{"name": "Alice", "confidence": 0.9, "signals": ["test"]}],
+        "projects": [{"name": "Acme", "confidence": 0.8, "signals": ["test"]}],
+        "uncertain": [{"name": "Foo", "confidence": 0.4, "signals": ["test"]}],
+    }
+    result = confirm_entities(detected, yes=True)
+    assert result["people"] == ["Alice"]
+    assert result["projects"] == ["Acme"]
+
+
+def test_confirm_entities_accept_all():
+    detected = {
+        "people": [{"name": "Alice", "confidence": 0.9, "signals": ["test"]}],
+        "projects": [],
+        "uncertain": [],
+    }
+    with patch("builtins.input", side_effect=["", "n"]):
+        result = confirm_entities(detected, yes=False)
+    assert "Alice" in result["people"]
+
+
+def test_confirm_entities_edit_reclassify_uncertain():
+    detected = {
+        "people": [],
+        "projects": [],
+        "uncertain": [
+            {"name": "Foo", "confidence": 0.4, "signals": ["test"]},
+            {"name": "Bar", "confidence": 0.4, "signals": ["test"]},
+        ],
+    }
+    with patch(
+        "builtins.input",
+        side_effect=[
+            "edit",  # choice
+            "p",  # Foo -> person
+            "s",  # Bar -> skip
+            "",  # no removals from people
+            "",  # no removals from projects
+            "n",  # don't add missing
+        ],
+    ):
+        result = confirm_entities(detected, yes=False)
+    assert "Foo" in result["people"]
+    assert "Bar" not in result["people"]
+    assert "Bar" not in result["projects"]
+
+
+def test_confirm_entities_add_mode():
+    detected = {
+        "people": [],
+        "projects": [],
+        "uncertain": [],
+    }
+    with patch(
+        "builtins.input",
+        side_effect=[
+            "add",  # choice = add
+            "NewPerson",  # name
+            "p",  # person
+            "NewProj",  # name
+            "r",  # project
+            "",  # stop adding
+        ],
+    ):
+        result = confirm_entities(detected, yes=False)
+    assert "NewPerson" in result["people"]
+    assert "NewProj" in result["projects"]
+
+
+# ── scan_for_detection fallback ────────────────────────────────────────
+
+
+def test_scan_for_detection_fallback_to_all_readable(tmp_path):
+    """When fewer than 3 prose files, falls back to include all readable files."""
+    (tmp_path / "one.md").write_text("hello")
+    (tmp_path / "two.txt").write_text("world")
+    # Only 2 prose files, so it should also include code files
+    (tmp_path / "code.py").write_text("import os")
+    (tmp_path / "app.js").write_text("console.log()")
+    files = scan_for_detection(str(tmp_path))
+    extensions = {os.path.splitext(str(f))[1] for f in files}
+    assert ".py" in extensions or ".js" in extensions
+
+
+def test_scan_for_detection_max_files(tmp_path):
+    """Caps to max_files."""
+    for i in range(20):
+        (tmp_path / f"note{i}.md").write_text(f"content {i}")
+    files = scan_for_detection(str(tmp_path), max_files=5)
+    assert len(files) <= 5
